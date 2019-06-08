@@ -53,4 +53,4 @@ case class Predict(mid: Int, score: Double)
   * @param genres 类别
   * @param recs 推荐列表
   */
-case class GenresRecommendation(genres: String, recs: Seq[Predict])
+case class GenresRecommendation(genres: String, recs: String)

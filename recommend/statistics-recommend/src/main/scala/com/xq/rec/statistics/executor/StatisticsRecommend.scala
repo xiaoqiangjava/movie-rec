@@ -1,21 +1,20 @@
 package com.xq.rec.statistics.executor
 
-import java.text.SimpleDateFormat
-import java.util.{Date, Properties}
+import java.util.Properties
 
 import com.xq.rec.statistics.constant.Constant
-import com.xq.rec.statistics.model.{Movie, MysqlConf, Rating}
-import com.xq.rec.statistics.utils.StorageUtil
+import com.xq.rec.statistics.model.{Movie, Rating}
+import com.xq.rec.statistics.offline.{AverageScoreRec, ClassicTopNRec, HistoryHotRec, RecentHotRec}
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.SparkSession
 import org.slf4j.LoggerFactory
 
 /**
   * 离线统计推荐：
-  *     历史热门电影统计
-  *     最近热门电影统计
-  *     电影平均得分统计
-  *     每个类别优质电影推荐(topN)
+  *     历史热门电影统计：历史评分数据最多的电影
+  *     最近热门电影统计：最近评分数据最多的电影
+  *     电影平均得分统计：用户对一个电影的平均得分
+  *     每个类别优质电影推荐(topN)： 每个类别中电影平均得分topN
   */
 object StatisticsRecommend {
     val logger = LoggerFactory.getLogger(StatisticsRecommend.getClass)
@@ -42,33 +41,26 @@ object StatisticsRecommend {
         // 创建临时表
         ratingDF.createOrReplaceTempView("rating")
         ratingDF.cache()
+        movieDF.cache()
+        movieDF.show()
 
         // 1. 历史热门推荐，即历史评分数据最多，mid, count
-        val historyHotDF = spark.sql("select mid, count(mid) as count from rating group by mid order by count desc")
-        logger.info("History hot rec.")
-        historyHotDF.show()
-        implicit val mysqlConf = MysqlConf(conf("mysql.url"), conf("user"), conf("password"))
-        StorageUtil.storeResult2Mysql(historyHotDF, Constant.HISTORY_HOT_REC)
+        val historyHotRec = new HistoryHotRec(conf)
+        historyHotRec.fit(spark)
 
         // 2. 近期热门推荐，按照yyyyMM格式选取最近的评分数据，统计评分个数
-        val sdf = new SimpleDateFormat("yyyyMM")
-        // 自定义函数udf使用场景：如果在spark.sql()中的SQL语句中使用，则要使用spark.udf.register()来注册，要是在DataFrame中的select()中使用，可以使用udf()函数来注册
-//        import org.apache.spark.sql.functions._
-//        val formatDate = udf((timestamp: Int) => sdf.format(new Date(timestamp * 1000L)).toInt)
-        spark.udf.register("formatDate", (timestamp: Int) => sdf.format(new Date(timestamp * 1000L)).toInt)
-        // 自定义函数跟聚合函数一起使用时会报错，需要先将自定义函数得到的列封装成一张表
-        val recentTableDF = spark.sql("select mid, formatDate(timestamp) as yearmonth from rating")
-        recentTableDF.createOrReplaceTempView("recent")
-        recentTableDF.show()
-        val recentDF = spark.sql("select mid, yearmonth, count(mid) as count from recent group by yearmonth, mid order by yearmonth desc, count desc")
-        logger.info("Recent hot rec...")
-        recentDF.show()
-        StorageUtil.storeResult2Mysql(recentDF, Constant.RECENT_HOT_REC)
+        val recentHotRec = new RecentHotRec(conf)
+        recentHotRec.fit(spark)
+
         // 3. 优质电影推荐，统计电影的平均得分
-        val avgDF = spark.sql("select mid, avg(score) as score from rating group by mid order by score desc")
-        logger.info("High score movie rec...")
-        avgDF.show()
-        StorageUtil.storeResult2Mysql(avgDF, Constant.AVERAGE_SCORE_REC)
+        val averageScoreRec = new AverageScoreRec(conf)
+        val avgScoreDF = averageScoreRec.fit(spark)
+        avgScoreDF.cache()
+
         // 4. 各类别电影topN统计
+        val classicTopNRec = new ClassicTopNRec(conf)
+        classicTopNRec.fit(spark, movieDF, avgScoreDF)
+
+        spark.close()
     }
 }
