@@ -15,6 +15,7 @@
         <module>data-loader</module>
         <module>statistics-recommend</module>
         <module>lfm-cf-recommend</module>
+        <module>online-recommend</module>
     </modules>
 
     <dependencyManagement>
