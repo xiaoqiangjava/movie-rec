@@ -16,6 +16,7 @@
         <module>statistics-recommend</module>
         <module>lfm-cf-recommend</module>
         <module>online-recommend</module>
+        <module>content-recommend</module>
     </modules>
 
     <dependencyManagement>
