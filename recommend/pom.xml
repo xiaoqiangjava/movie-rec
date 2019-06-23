@@ -17,6 +17,7 @@
         <module>lfm-cf-recommend</module>
         <module>online-recommend</module>
         <module>content-recommend</module>
+        <module>kafka-stream</module>
     </modules>
 
     <dependencyManagement>
