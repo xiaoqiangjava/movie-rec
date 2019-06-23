@@ -18,7 +18,7 @@ import org.slf4j.LoggerFactory
   */
 object RealTimeRecommend {
     val logger = LoggerFactory.getLogger(RealTimeRecommend.getClass)
-    val conf = Map("spark.master" -> "local",
+    val conf = Map("spark.master" -> "local[2]",
         "mysql.url" -> "jdbc:mysql://192.168.0.103:3306/recommend",
         "mysql.driver" -> "com.mysql.jdbc.Driver",
         "user" -> "root",
@@ -27,11 +27,12 @@ object RealTimeRecommend {
     )
     def main(args: Array[String]): Unit = {
         val sparkConf = new SparkConf()
-        sparkConf.setMaster(conf("spark.master")).setAppName(RealTimeRecommend.getClass.getSimpleName)
+        // 使用local模式时，线程数量必须大于1，否则不会消费数据
+        sparkConf.setMaster(conf("spark.master")).setAppName(RealTimeRecommend.getClass.getSimpleName).set("spark.serializer","org.apache.spark.serializer.KryoSerializer")
         val spark = SparkSession.builder().config(sparkConf).getOrCreate()
         // 创建StreamingContext，用于实时计算
-        val ssc = new StreamingContext(spark.sparkContext, Seconds(2))
-        ssc.sparkContext.setCheckpointDir("d:/checkpoint")
+        val ssc = new StreamingContext(spark.sparkContext, Seconds(5))
+        ssc.checkpoint("d:/checkpoint")
         // 加载电影相似度矩阵数据，该数据在离线阶段写入到mysql中
         val props = new Properties()
         props.setProperty("user", conf("user"))
@@ -65,8 +66,8 @@ object RealTimeRecommend {
                 LocationStrategies.PreferConsistent,
                 ConsumerStrategies.Subscribe[String, String](Array(conf("kafka.topic")), Constant.kafkaConf))
         // 基于实时流推荐
-        val realTimeRec = new RealTimeRec(kafkaDStream)
-        realTimeRec.fit(simVoivesBroadcast.value, ratingMoviesBroadcast.value)
+        val realTimeRec = new RealTimeRec()
+        realTimeRec.fit(simVoivesBroadcast.value, ratingMoviesBroadcast.value, kafkaDStream)
 
         ssc.start()
         ssc.awaitTermination()

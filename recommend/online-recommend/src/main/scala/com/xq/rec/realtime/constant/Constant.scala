@@ -31,7 +31,7 @@ object Constant {
       * kafka config
       */
     val kafkaConf = Map(
-        "bootstrap.servers" -> "localhost:9092",
+        "bootstrap.servers" -> "learn:9092",
         "key.deserializer" -> classOf[StringDeserializer],
         "value.deserializer" -> classOf[StringDeserializer],
         "group.id" -> "recommend",

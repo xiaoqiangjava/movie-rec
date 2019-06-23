@@ -1,13 +1,12 @@
 package com.xq.rec.realtime.recommend
 
-import java.util.Properties
+import java.sql.{Connection, DriverManager, PreparedStatement}
 
 import com.xq.rec.realtime.constant.Constant
 import com.xq.rec.realtime.executor.RealTimeRecommend.conf
 import com.xq.rec.realtime.model.MysqlConf
 import com.xq.rec.realtime.utils.ConnHelper
 import org.apache.kafka.clients.consumer.ConsumerRecord
-import org.apache.spark.sql.SparkSession
 import org.apache.spark.streaming.dstream.DStream
 import org.slf4j.LoggerFactory
 import redis.clients.jedis.Jedis
@@ -18,19 +17,18 @@ import scala.collection.mutable.ArrayBuffer
 /**
   * 实时推荐算法
   */
-class RealTimeRec[T <: ConsumerRecord[String, String]](kafkaDStream: DStream[T]) {
-    val logger = LoggerFactory.getLogger(classOf[RealTimeRec[T]])
+class RealTimeRec extends Serializable {
+    val logger = LoggerFactory.getLogger(getClass)
     /**
       * 根据电影相似度和电影评分加权获取当前用户推荐优先级
       * @param simMovies 相似度电影列表
       * @param ratingMovies 用户已经评分过的电影列表
       */
-    def fit(simMovies: scala.collection.Map[Int, scala.collection.immutable.Map[Int, Double]], ratingMovies: Array[(Int, Int)]): Unit = {
+    def fit(simMovies: scala.collection.Map[Int, scala.collection.immutable.Map[Int, Double]],
+            ratingMovies: Array[(Int, Int)],
+            kafkaDStream: DStream[ConsumerRecord[String, String]]): Unit = {
         // 将kafka中的数据转成Rating结构
-        val ratingDStream = kafkaDStream.map(msg => {
-            val fields = msg.value().split("\\|")
-            (fields(0).trim.toInt, fields(1).trim.toInt, fields(2).trim.toDouble)
-        })
+        val ratingDStream = kafkaDStream.map(splitKafkaStream)
         // 基于实时流推荐
         ratingDStream.foreachRDD(msgRDD => {
             msgRDD.foreach{
@@ -38,7 +36,7 @@ class RealTimeRec[T <: ConsumerRecord[String, String]](kafkaDStream: DStream[T])
                     println("consume a batch data >>>>>>>>>>>>")
                     // 1. 从Redis中获取当前用户最近的K次评分，保存成Array(mid, score)
                     val recentRatintMovies = getRecentRatingMovies(Constant.RECENT_RATING_NUM, uid, ConnHelper.redis)
-                    logger.info("最近评分电影：{}", recentRatintMovies.take(20))
+                    logger.info("uid({})最近评分电影：{}", uid, recentRatintMovies.take(20))
                     // 2. 从电影相似度矩阵中取出当前电影相似的N个电影，作为备选列表，Array(mid)
                     val candidateMovies = getSimMovies(Constant.SIM_MOVIE_NUM, uid, mid, simMovies, ratingMovies)
                     logger.info("相似度候选集：{}", candidateMovies.take(20))
@@ -47,10 +45,15 @@ class RealTimeRec[T <: ConsumerRecord[String, String]](kafkaDStream: DStream[T])
                     logger.info("优先级推荐候选集：{}", recMovies.take(20))
                     // 4. 将推荐结果保存到mysql中(uid, (mid, score)|(mid, score))
                     implicit val mysqlConf = MysqlConf(conf("mysql.url"), conf("user"), conf("password"))
-                    saveMovies2Mysql(recMovies)
+                    saveMovies2Mysql(uid, recMovies)
                 }
             }
         })
+    }
+
+    def splitKafkaStream(msg: ConsumerRecord[String, String]): (Int, Int, Double) = {
+        val fields = msg.value().split("\\|")
+        (fields(0).trim.toInt, fields(1).trim.toInt, fields(2).trim.toDouble)
     }
 
     /**
@@ -139,7 +142,37 @@ class RealTimeRec[T <: ConsumerRecord[String, String]](kafkaDStream: DStream[T])
         }.toArray
     }
 
-    def saveMovies2Mysql(candidate: Array[(Int, Double)], spark: SparkSession)(implicit mysqlConf: MysqlConf): Unit = {
+    /**
+      * 将数据保存到mysql中
+      * @param uid uid
+      * @param candidate 电影候选集(2, 4.5)|(3, 5.0)
+      * @param mysqlConf mysqlConf
+      */
+    def saveMovies2Mysql(uid: Int, candidate: Array[(Int, Double)])(implicit mysqlConf: MysqlConf): Unit = {
         // 保存的动作需要离线处理，不依靠spark，通过jdbc直接插入数据
+        var conn: Connection = null
+        var stmt: PreparedStatement = null
+        try
+        {
+            conn = DriverManager.getConnection(mysqlConf.uri, mysqlConf.user, mysqlConf.password)
+            val sql = "insert into rec_real_time(uid, movies) values (?, ?)"
+            stmt = conn.prepareStatement(sql)
+            stmt.setInt(1, uid)
+            stmt.setString(2, candidate.mkString("|"))
+            stmt.executeUpdate()
+        }
+        catch
+        {
+            case e: Exception => logger.error(e.getMessage, e)
+        }
+        finally
+        {
+            if (null != stmt) {
+                stmt.close()
+            }
+            if (null != conn) {
+                conn.close()
+            }
+        }
     }
 }
